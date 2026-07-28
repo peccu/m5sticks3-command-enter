@@ -38,7 +38,7 @@ class BLECallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
         bleConnected = true;
         // Initiate bonding from peripheral side so macOS completes pairing
-        pServer->startSecurity(connInfo.getConnHandle());
+        NimBLEDevice::startSecurity(connInfo.getConnHandle());
     }
     void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
         bleConnected = false;

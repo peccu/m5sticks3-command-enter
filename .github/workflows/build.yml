@@ -1,0 +1,71 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio
+          key: pio-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        run: pio run
+
+      # --------------------------------------------------------
+      # Create a single merged .bin for M5Burner / esptool flash
+      #   ESP32 (PICO-V3-02): bootloader at 0x1000, chip = esp32
+      #   ESP32-S3:           bootloader at 0x0000, chip = esp32s3
+      # Adjust --chip and first address if you switch boards.
+      # --------------------------------------------------------
+      - name: Create merged binary
+        run: |
+          pip install esptool
+          BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" | head -1)
+          python -m esptool --chip esp32 merge_bin \
+            -o merged-firmware.bin \
+            --flash_mode dio --flash_size 8MB \
+            0x1000  .pio/build/m5sticks3/bootloader.bin \
+            0x8000  .pio/build/m5sticks3/partitions.bin \
+            0xe000  "${BOOT_APP0}" \
+            0x10000 .pio/build/m5sticks3/firmware.bin
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: |
+            .pio/build/m5sticks3/firmware.bin
+            merged-firmware.bin
+
+      # Publish a GitHub Release with both binaries on version tags
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            .pio/build/m5sticks3/firmware.bin
+            merged-firmware.bin

@@ -497,8 +497,8 @@ void loop() {
             // Serial.printf("[TILT] x=%.2f y=%.2f z=%.2f\n",
             //               d.accel.x, d.accel.y, d.accel.z);
             TiltState newTilt;
-            if      (d.accel.y < -TILT_THRESHOLD) newTilt = TILT_LEFT;
-            else if (d.accel.y >  TILT_THRESHOLD) newTilt = TILT_RIGHT;
+            if      (d.accel.y >  TILT_THRESHOLD) newTilt = TILT_LEFT;
+            else if (d.accel.y < -TILT_THRESHOLD) newTilt = TILT_RIGHT;
             else                                    newTilt = TILT_CENTER;
             if (newTilt != currentTilt) {
                 currentTilt = newTilt;

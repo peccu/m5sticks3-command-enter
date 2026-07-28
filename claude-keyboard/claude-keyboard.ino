@@ -71,20 +71,11 @@ class BLECallbacks : public NimBLEServerCallbacks {
 // ── Advertising helpers ────────────────────────────────────────────────────
 
 void startAdvertising() {
-    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-    adv->stop();
-
-    int n = NimBLEDevice::getNumBonds();
-    if (n == 0) {
-        // No bonds yet — undirected so any device can pair
-        adv->start();
-        directedAdvStartMs = 0;
-    } else {
-        if (targetBondIdx >= n) targetBondIdx = 0;
-        NimBLEAddress target = NimBLEDevice::getBondedAddress(targetBondIdx);
-        adv->start(DIRECTED_ADV_TIMEOUT_MS, &target);
-        directedAdvStartMs = millis();
-    }
+    // Undirected advertising — bonded devices reconnect automatically.
+    // Directed advertising (Option C) requires confirming the NimBLE-Arduino
+    // start() API signature; deferred to a follow-up step.
+    NimBLEDevice::getAdvertising()->start();
+    directedAdvStartMs = 0;
 }
 
 void switchToNextDevice() {
@@ -194,9 +185,6 @@ void updateStatusDisplay() {
     if (bleConnected) {
         snprintf(buf, sizeof(buf), "[Dev%d/%d] Connected!", targetBondIdx + 1, n);
         M5.Display.setTextColor(GREEN, BLACK);
-    } else if (directedAdvStartMs > 0) {
-        snprintf(buf, sizeof(buf), "-> Dev%d/%d ...", targetBondIdx + 1, n);
-        M5.Display.setTextColor(CYAN, BLACK);
     } else if (n == 0) {
         snprintf(buf, sizeof(buf), "Pairing mode...");
         M5.Display.setTextColor(YELLOW, BLACK);
@@ -237,15 +225,6 @@ void setup() {
 
 void loop() {
     M5.update();
-
-    // Directed advertising timeout → fall back to undirected
-    if (!bleConnected && directedAdvStartMs > 0 &&
-        (millis() - directedAdvStartMs) > DIRECTED_ADV_TIMEOUT_MS) {
-        directedAdvStartMs = 0;
-        NimBLEDevice::getAdvertising()->stop();
-        NimBLEDevice::getAdvertising()->start();
-        updateStatusDisplay();
-    }
 
     // Button A: send Command+Enter
     if (M5.BtnA.wasPressed()) {

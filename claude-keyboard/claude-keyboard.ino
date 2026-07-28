@@ -28,8 +28,10 @@ static NimBLECharacteristic* inputReport = nullptr;
 static bool bleConnected = false;
 
 class BLECallbacks : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer*, NimBLEConnInfo&) override {
+    void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
         bleConnected = true;
+        // Initiate bonding from the peripheral side so macOS completes pairing
+        pServer->startSecurity(connInfo.getConnHandle());
     }
     void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
         bleConnected = false;

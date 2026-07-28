@@ -47,9 +47,14 @@ static bool     pairingMode                  = false;
 // All M5.Display calls happen in the main task only.
 static volatile bool displayDirty           = false;
 
-// Signals onDisconnect that the disconnect was a deliberate rejection
-// (not a real disconnect), so advertising should restart after a backoff.
+// Signals onDisconnect that the disconnect was a deliberate rejection.
 static volatile bool lastWasRejection       = false;
+
+// Advertising restart request from BLE callbacks.
+// Non-zero = "restart advertising at this millis() value (or later)".
+// loop() is the only place that calls startAdvertising(), avoiding concurrent
+// calls from the BLE task and the main task that would crash NimBLE.
+static volatile uint32_t advRestartAtMs     = 0;
 
 // Button B timing for long-press detection
 static uint32_t btnBDownMs                   = 0;
@@ -115,12 +120,13 @@ class BLECallbacks : public NimBLEServerCallbacks {
         Serial.printf("[BLE] disconnected reason=0x%02x  next=Dev%d%s\n",
                       reason, targetBondIdx + 1, rejected ? " (rejected)" : "");
 
-        if (rejected) {
-            // Give the rejected device a moment to stop hammering us
-            vTaskDelay(pdMS_TO_TICKS(REJECTION_BACKOFF_MS));
-        }
-        startAdvertising();
-        displayDirty = true;
+        // Schedule advertising restart in the main loop.
+        // We must NOT call startAdvertising() here: doing so from the BLE task
+        // while the main task may also call it (e.g. Button B press during the
+        // rejection backoff) causes concurrent adv->stop()/start() and crashes NimBLE.
+        uint32_t backoff = rejected ? REJECTION_BACKOFF_MS : 0;
+        advRestartAtMs = millis() + backoff;
+        displayDirty   = true;
     }
 };
 
@@ -413,6 +419,17 @@ void loop() {
     if (displayDirty) {
         displayDirty = false;
         updateStatusDisplay();
+    }
+
+    // Advertising restart requested by onDisconnect (see advRestartAtMs).
+    // Centralising startAdvertising() in the main loop prevents concurrent
+    // calls from the BLE task and the main task that crashed NimBLE before.
+    if (advRestartAtMs > 0 && millis() >= advRestartAtMs) {
+        advRestartAtMs = 0;
+        if (!bleConnected) {
+            startAdvertising();
+            displayDirty = true;
+        }
     }
 
     // Refresh battery indicator every 30 s

@@ -2,7 +2,7 @@
 // NimBLE-Arduino — install via Arduino Library Manager
 #include <NimBLEDevice.h>
 
-// Button A (face)   = Command+Enter
+// Button A (face)   = Command+Enter (level) / Cmd+Shift+[ (tilt left) / Cmd+Shift+] (tilt right)
 // Button B (side)   = short press: cycle device  /  hold 2 s: enter pairing mode
 
 static const uint8_t hidReportMap[] = {
@@ -20,8 +20,15 @@ static const uint8_t hidReportMap[] = {
 };
 
 #define MOD_LEFT_GUI          0x08
+#define MOD_LEFT_SHIFT        0x02
 #define KEY_ENTER             0x28
+#define KEY_LBRACKET          0x2F  // [ {
+#define KEY_RBRACKET          0x30  // ] }
 #define NO_CONN               0xFFFF
+
+// Roll threshold in G. Tune this to adjust tilt sensitivity.
+// 0.30 G ≈ 17°, 0.50 G ≈ 30°. Lower = more sensitive.
+#define TILT_THRESHOLD        0.30f
 
 // Directed advertising lasts this long before falling back to undirected.
 // Long enough to let the user wake the target Mac.
@@ -55,6 +62,10 @@ static volatile bool lastWasRejection       = false;
 // loop() is the only place that calls startAdvertising(), avoiding concurrent
 // calls from the BLE task and the main task that would crash NimBLE.
 static volatile uint32_t advRestartAtMs     = 0;
+
+// Tilt state from accelerometer — determines what Button A sends
+enum TiltState : uint8_t { TILT_CENTER, TILT_LEFT, TILT_RIGHT };
+static TiltState currentTilt = TILT_CENTER;
 
 // Button B timing for long-press detection
 static uint32_t btnBDownMs                   = 0;
@@ -296,6 +307,39 @@ void drawBattery() {
     M5.Display.setTextColor(WHITE, BLACK);
 }
 
+// Draw the dynamic A-button hint at the bottom, reflecting the current tilt state.
+// Called from drawButtonHints() and also directly from loop() when tilt changes.
+void drawTiltIndicator() {
+    int w = M5.Display.width();
+    int h = M5.Display.height();
+    int usableW = w - 18;  // exclude right B-hint strip
+
+    const char* label;
+    uint32_t    color;
+    switch (currentTilt) {
+        case TILT_LEFT:
+            label = "< Cmd+Shift+[";
+            color = YELLOW;
+            break;
+        case TILT_RIGHT:
+            label = "Cmd+Shift+] >";
+            color = YELLOW;
+            break;
+        default:
+            label = "Cmd+Enter";
+            color = TFT_DARKGREY;
+            break;
+    }
+
+    int textW = strlen(label) * 6;
+    M5.Display.fillRect(0, h - 12, usableW, 12, BLACK);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(color, BLACK);
+    M5.Display.setCursor((usableW - textW) / 2, h - 9);
+    M5.Display.print(label);
+    M5.Display.setTextColor(WHITE, BLACK);
+}
+
 // Draw Button B hint as two-line vertical text on the right edge.
 // The two lines are packed into a single sprite (sprH=18) so one pushRotateZoom
 // handles both. With 270° rotation each line reads top→bottom on screen.
@@ -328,18 +372,8 @@ static void drawBHintVertical() {
 }
 
 void drawButtonHints() {
-    int w = M5.Display.width();
-    int h = M5.Display.height();
-
-    // A hint: centered horizontally at bottom (Button A is on the front face)
-    const char* aText = "Cmd+Enter";
-    int textW = strlen(aText) * 6;
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(TFT_DARKGREY, BLACK);
-    M5.Display.setCursor((w - textW) / 2, h - 9);
-    M5.Display.print(aText);
-    M5.Display.setTextColor(WHITE, BLACK);
-
+    // A hint: dynamic tilt indicator (centered at bottom)
+    drawTiltIndicator();
     // B hint: vertical on right edge (two lines, 18px wide strip)
     drawBHintVertical();
 }
@@ -451,6 +485,28 @@ void loop() {
         drawBattery();
     }
 
+    // Tilt detection — update A-hint and button behaviour every 50 ms.
+    // Uses the X-axis acceleration (roll).  If left/right are swapped on your
+    // device, negate the comparison (ax > threshold → TILT_LEFT, etc.).
+    // Serial log: hold the device and watch "[TILT]" lines to find the right axis.
+    static uint32_t lastImuMs = 0;
+    if (millis() - lastImuMs >= 50) {
+        lastImuMs = millis();
+        if (M5.Imu.update()) {
+            auto d = M5.Imu.getImuData();
+            Serial.printf("[TILT] x=%.2f y=%.2f z=%.2f\n",
+                          d.accel.x, d.accel.y, d.accel.z);
+            TiltState newTilt;
+            if      (d.accel.x < -TILT_THRESHOLD) newTilt = TILT_LEFT;
+            else if (d.accel.x >  TILT_THRESHOLD) newTilt = TILT_RIGHT;
+            else                                    newTilt = TILT_CENTER;
+            if (newTilt != currentTilt) {
+                currentTilt = newTilt;
+                drawTiltIndicator();
+            }
+        }
+    }
+
     // Directed advertising timeout → fall back to undirected
     if (!bleConnected && directedAdvStartMs > 0 &&
         (millis() - directedAdvStartMs) > DIRECTED_ADV_TIMEOUT_MS) {
@@ -461,15 +517,26 @@ void loop() {
         displayDirty = true;
     }
 
-    // ── Button A: send Command+Enter ──────────────────────────────────────
+    // ── Button A: send key according to current tilt ──────────────────────
     if (M5.BtnA.wasPressed()) {
         if (bleConnected) {
-            sendKey(MOD_LEFT_GUI, KEY_ENTER);
-            drawAction("Cmd+Enter sent");
+            switch (currentTilt) {
+                case TILT_LEFT:
+                    sendKey(MOD_LEFT_GUI | MOD_LEFT_SHIFT, KEY_LBRACKET);
+                    drawAction("Cmd+Shift+[ sent");
+                    break;
+                case TILT_RIGHT:
+                    sendKey(MOD_LEFT_GUI | MOD_LEFT_SHIFT, KEY_RBRACKET);
+                    drawAction("Cmd+Shift+] sent");
+                    break;
+                default:
+                    sendKey(MOD_LEFT_GUI, KEY_ENTER);
+                    drawAction("Cmd+Enter sent");
+                    break;
+            }
             delay(500);
             drawAction("");
         } else if (!pairingMode) {
-            // Suppress "Not connected" during pairing — the screen already shows the state
             drawAction("Not connected");
             delay(500);
             drawAction("");

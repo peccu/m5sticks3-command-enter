@@ -38,9 +38,12 @@ jobs:
       - name: Install libraries
         run: |
           arduino-cli lib install "M5Unified"
-          arduino-cli lib install "ESP32 BLE Keyboard"
+          # ESP32 BLE Keyboard is not in the Library Manager; install from GitHub
+          arduino-cli config set library.enable_unsafe_install true
+          arduino-cli lib install \
+            --git-url https://github.com/T-vK/ESP32-BLE-Keyboard.git
 
-      # FQBN: m5stack:esp32:m5stack_sticks3 (確認済み)
+      # FQBN confirmed: m5stack:esp32:m5stack_sticks3
       - name: Compile
         run: |
           arduino-cli compile \
@@ -48,8 +51,8 @@ jobs:
             --export-binaries \
             claude-keyboard
 
-      # M5Burner / esptool で直接焼ける merged binary を生成
-      # ESP32-S3 はブートローダーが 0x0000
+      # Generate a merged binary flashable by M5Burner / esptool
+      # ESP32-S3 bootloader starts at 0x0000
       - name: Create merged binary
         run: |
           pip install esptool

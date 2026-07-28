@@ -4,12 +4,6 @@
 
 // Button A = Command+Enter
 // Button B = switch to next bonded device via directed advertising
-//
-// Pairing flow:
-//   First boot (0 bonds): undirected advertising — pair any device
-//   After bonds exist:    directed advertising to targetBondIdx on (re)connect
-//   Button B:             cycle targetBondIdx → disconnect → directed adv to next
-//   Timeout (10s):        fall back to undirected advertising
 
 static const uint8_t hidReportMap[] = {
     0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x01,
@@ -25,19 +19,23 @@ static const uint8_t hidReportMap[] = {
     0xC0
 };
 
-#define MOD_LEFT_GUI 0x08
-#define KEY_ENTER    0x28
-#define NO_CONN      0xFFFF
-#define DIRECTED_ADV_TIMEOUT_MS 10000
+#define MOD_LEFT_GUI          0x08
+#define KEY_ENTER             0x28
+#define NO_CONN               0xFFFF
+#define DIRECTED_ADV_TIMEOUT_MS 30000  // 30 s — long enough for user to wake Mac
 
-static NimBLECharacteristic* inputReport  = nullptr;
-static bool     bleConnected              = false;
-static uint16_t activeConnHandle          = NO_CONN;
-static int      targetBondIdx             = 0;
-static uint32_t directedAdvStartMs        = 0;
+static NimBLECharacteristic* inputReport   = nullptr;
+static bool     bleConnected               = false;
+static uint16_t activeConnHandle           = NO_CONN;
+static int      targetBondIdx              = 0;
+static uint32_t directedAdvStartMs         = 0;
+
+// Flag to request a display refresh from the main loop.
+// BLE callbacks run in a separate task; touching M5.Display there causes
+// display corruption. Set this flag instead and let loop() do the update.
+static volatile bool displayDirty = false;
 
 void startAdvertising();
-void updateStatusDisplay();
 
 // ── BLE callbacks ──────────────────────────────────────────────────────────
 
@@ -47,7 +45,7 @@ class BLECallbacks : public NimBLEServerCallbacks {
         activeConnHandle = info.getConnHandle();
         directedAdvStartMs = 0;
 
-        // Keep targetBondIdx in sync with the device that actually connected
+        // Sync targetBondIdx to whichever device actually connected
         NimBLEAddress addr = info.getAddress();
         int n = NimBLEDevice::getNumBonds();
         for (int i = 0; i < n; i++) {
@@ -56,19 +54,23 @@ class BLECallbacks : public NimBLEServerCallbacks {
                 break;
             }
         }
+        Serial.printf("[BLE] connected  handle=%d  targetIdx=%d\n",
+                      activeConnHandle, targetBondIdx);
         NimBLEDevice::startSecurity(activeConnHandle);
-        updateStatusDisplay();
+        displayDirty = true;
     }
 
-    void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
+    void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
         bleConnected     = false;
         activeConnHandle = NO_CONN;
+        Serial.printf("[BLE] disconnected  reason=0x%02x  next=Dev%d\n",
+                      reason, targetBondIdx + 1);
         startAdvertising();
-        updateStatusDisplay();
+        displayDirty = true;
     }
 };
 
-// ── Advertising helpers ────────────────────────────────────────────────────
+// ── Advertising ────────────────────────────────────────────────────────────
 
 void startAdvertising() {
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -78,11 +80,21 @@ void startAdvertising() {
     if (n == 0) {
         adv->start();
         directedAdvStartMs = 0;
+        Serial.println("[ADV] undirected (no bonds)");
     } else {
         if (targetBondIdx >= n) targetBondIdx = 0;
         NimBLEAddress target = NimBLEDevice::getBondedAddress(targetBondIdx);
-        adv->start(DIRECTED_ADV_TIMEOUT_MS, &target);
-        directedAdvStartMs = millis();
+        Serial.printf("[ADV] directed -> Dev%d/%d  addr=%s\n",
+                      targetBondIdx + 1, n, target.toString().c_str());
+        bool ok = adv->start(DIRECTED_ADV_TIMEOUT_MS, &target);
+        if (ok) {
+            directedAdvStartMs = millis();
+        } else {
+            // Directed advertising not supported or failed — fall back
+            Serial.println("[ADV] directed failed, falling back to undirected");
+            adv->start();
+            directedAdvStartMs = 0;
+        }
     }
 }
 
@@ -91,14 +103,15 @@ void switchToNextDevice() {
     if (n == 0) return;
 
     targetBondIdx = (targetBondIdx + 1) % n;
+    Serial.printf("[SW] switching -> Dev%d/%d\n", targetBondIdx + 1, n);
 
     if (bleConnected && activeConnHandle != NO_CONN) {
-        // Disconnect; startAdvertising() is called from onDisconnect
         NimBLEDevice::getServer()->disconnect(activeConnHandle);
+        // startAdvertising() will be called from onDisconnect
     } else {
         startAdvertising();
+        displayDirty = true;
     }
-    updateStatusDisplay();
 }
 
 // ── BLE setup ─────────────────────────────────────────────────────────────
@@ -121,18 +134,16 @@ void setupBLE() {
 
     // HID Service (0x1812)
     NimBLEService* hid = server->createService("1812");
-
     uint8_t mode = 1;
     hid->createCharacteristic("2A4E", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE_NR)
        ->setValue(&mode, 1);
-
     hid->createCharacteristic("2A4B", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC)
        ->setValue(hidReportMap, sizeof(hidReportMap));
 
     inputReport = hid->createCharacteristic(
         "2A4D",
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC);
-    uint8_t inRef[]  = {0x01, 0x01};
+    uint8_t inRef[] = {0x01, 0x01};
     inputReport->createDescriptor("2908", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC, 2)
                ->setValue(inRef, 2);
 
@@ -158,7 +169,6 @@ void setupBLE() {
         ->setValue(&lvl, 1);
     batt->start();
 
-    // Configure advertising data (start is deferred to startAdvertising())
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
     adv->setName("Claude Keyboard");
     adv->addServiceUUID("1812");
@@ -180,7 +190,7 @@ void sendKey(uint8_t modifier, uint8_t keycode) {
     inputReport->notify();
 }
 
-// ── Display ────────────────────────────────────────────────────────────────
+// ── Display (called only from main loop) ──────────────────────────────────
 
 void updateStatusDisplay() {
     M5.Display.fillRect(0, 70, M5.Display.width(), 20, BLACK);
@@ -218,6 +228,8 @@ void drawAction(const char* label) {
 // ── Arduino entry points ───────────────────────────────────────────────────
 
 void setup() {
+    Serial.begin(115200);
+
     auto cfg = M5.config();
     M5.begin(cfg);
 
@@ -237,13 +249,20 @@ void setup() {
 void loop() {
     M5.update();
 
+    // Update display from main task only (BLE callbacks set displayDirty)
+    if (displayDirty) {
+        displayDirty = false;
+        updateStatusDisplay();
+    }
+
     // Directed advertising timeout → fall back to undirected
     if (!bleConnected && directedAdvStartMs > 0 &&
         (millis() - directedAdvStartMs) > DIRECTED_ADV_TIMEOUT_MS) {
+        Serial.println("[ADV] directed timeout, falling back to undirected");
         directedAdvStartMs = 0;
         NimBLEDevice::getAdvertising()->stop();
         NimBLEDevice::getAdvertising()->start();
-        updateStatusDisplay();
+        displayDirty = true;
     }
 
     // Button A: send Command+Enter

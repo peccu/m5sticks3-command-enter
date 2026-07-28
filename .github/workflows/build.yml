@@ -28,21 +28,28 @@ jobs:
       - name: Install ESP32 platform
         run: |
           arduino-cli config init
+          # Espressif 公式 + M5Stack 独自パッケージの両方を登録
           arduino-cli config add board_manager.additional_urls \
             https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli config add board_manager.additional_urls \
+            https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/arduino/package_m5stack_index.json
           arduino-cli core update-index
           arduino-cli core install esp32:esp32
+          arduino-cli core install m5stack:esp32
 
       - name: Install libraries
         run: arduino-cli lib install "M5Unified"
 
-      # FQBN の確認: arduino-cli board listall m5stack
-      # M5StickC Plus2 は esp32:esp32:m5stick-c-plus2
-      # 実機に合わせて変更してください
+      # FQBN の確認方法:
+      #   arduino-cli board listall m5stack
+      # StickS3 の候補:
+      #   m5stack:esp32:m5sticks3        (M5Stack パッケージ — 優先)
+      #   esp32:esp32:m5sticks3          (Espressif パッケージ)
+      # Arduino IDE の ツール > ボード で表示される名前を確認してください
       - name: Compile
         run: |
           arduino-cli compile \
-            --fqbn esp32:esp32:m5stick-c-plus2 \
+            --fqbn m5stack:esp32:m5sticks3 \
             --export-binaries \
             claude-keyboard
 

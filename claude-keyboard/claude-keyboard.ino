@@ -354,7 +354,7 @@ void drawButtonHints() {
 //   right  B hint      (hints layer, vertical)
 #define DYNAMIC_AREA_TOP  65
 #define STATUS_Y          68
-#define ACTION_Y          80
+#define ACTION_Y          92
 
 void updateStatusDisplay() {
     int w = M5.Display.width();
@@ -370,7 +370,7 @@ void updateStatusDisplay() {
     char buf[40];
 
     if (pairingMode) {
-        snprintf(buf, sizeof(buf), "Pair new device\n(Click:Cancel)");
+        snprintf(buf, sizeof(buf), "Pair new device\n(Side Click:Cancel)");
         M5.Display.setTextColor(MAGENTA, BLACK);
     } else if (bleConnected) {
         snprintf(buf, sizeof(buf), "[Dev%d/%d] Connected!", targetBondIdx + 1, n);
@@ -468,7 +468,8 @@ void loop() {
             drawAction("Cmd+Enter sent");
             delay(500);
             drawAction("");
-        } else {
+        } else if (!pairingMode) {
+            // Suppress "Not connected" during pairing — the screen already shows the state
             drawAction("Not connected");
             delay(500);
             drawAction("");

@@ -20,12 +20,16 @@ static const uint8_t hidReportMap[] = {
     0xC0
 };
 
+#define MOD_LEFT_CTRL         0x01
 #define MOD_LEFT_GUI          0x08
 #define MOD_LEFT_SHIFT        0x02
 #define KEY_ENTER             0x28
 #define KEY_LBRACKET          0x2F  // [
 #define KEY_RBRACKET          0x30  // ]
 #define KEY_SPACE             0x2C
+#define KEY_HOME              0x4A
+#define KEY_PGUP              0x4B
+#define KEY_PGDN              0x4E
 #define KEY_RIGHT             0x4F
 #define KEY_LEFT              0x50
 #define KEY_DOWN              0x51
@@ -80,6 +84,13 @@ static const KeyMode keyModes[] = {
         0, KEY_F12,
         0, KEY_F11,
         "Mute", "< Vol+", "Vol- >"
+    },
+    {
+        "Excel",
+        MOD_LEFT_CTRL, KEY_HOME,
+        MOD_LEFT_CTRL, KEY_PGDN,
+        MOD_LEFT_CTRL, KEY_PGUP,
+        "Ctrl+Home", "< Ctrl+PgDn", "Ctrl+PgUp >"
     },
 };
 static const int NUM_MODES = (int)(sizeof(keyModes) / sizeof(keyModes[0]));

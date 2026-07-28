@@ -319,9 +319,11 @@ static void drawBHintVertical() {
     spr.setCursor(0, 10);
     spr.print(line2);
 
-    // Center at (w-9, h/2): after 270° rotation the 18px-tall sprite becomes
-    // an 18px-wide strip flush with the right edge, both lines reading top→bottom.
-    spr.pushRotateZoom(w - 9, h / 2, 270, 1.0, 1.0);
+    // Position in the lower portion of the screen, clamped so nothing clips.
+    int centerY = h / 2 + 15;
+    int maxY    = h - sprW / 2 - 2;
+    if (centerY > maxY) centerY = maxY;
+    spr.pushRotateZoom(w - 9, centerY, 270, 1.0, 1.0);
     spr.deleteSprite();
 }
 
@@ -368,7 +370,7 @@ void updateStatusDisplay() {
     char buf[40];
 
     if (pairingMode) {
-        snprintf(buf, sizeof(buf), "Pair new dev (B:cancel)");
+        snprintf(buf, sizeof(buf), "Pair new device\n(Side Button:Cancel)");
         M5.Display.setTextColor(MAGENTA, BLACK);
     } else if (bleConnected) {
         snprintf(buf, sizeof(buf), "[Dev%d/%d] Connected!", targetBondIdx + 1, n);

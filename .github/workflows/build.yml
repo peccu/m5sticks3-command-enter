@@ -15,7 +15,6 @@ jobs:
 
       - uses: arduino/setup-arduino-cli@v2
 
-      # ボード定義とライブラリを毎回インストールするのは遅いのでキャッシュする
       - name: Cache Arduino packages
         uses: actions/cache@v4
         with:
@@ -28,7 +27,6 @@ jobs:
       - name: Install ESP32 platform
         run: |
           arduino-cli config init
-          # Espressif 公式 + M5Stack 独自パッケージの両方を登録
           arduino-cli config add board_manager.additional_urls \
             https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
           arduino-cli config add board_manager.additional_urls \
@@ -38,7 +36,9 @@ jobs:
           arduino-cli core install m5stack:esp32
 
       - name: Install libraries
-        run: arduino-cli lib install "M5Unified"
+        run: |
+          arduino-cli lib install "M5Unified"
+          arduino-cli lib install "ESP32 BLE Keyboard"
 
       # FQBN: m5stack:esp32:m5stack_sticks3 (確認済み)
       - name: Compile
@@ -48,15 +48,34 @@ jobs:
             --export-binaries \
             claude-keyboard
 
+      # M5Burner / esptool で直接焼ける merged binary を生成
+      # ESP32-S3 はブートローダーが 0x0000
+      - name: Create merged binary
+        run: |
+          pip install esptool
+          BUILD=claude-keyboard/build/m5stack.esp32.m5stack_sticks3
+          BOOT_APP0=$(find ~/.arduino15 -name "boot_app0.bin" | head -1)
+          python -m esptool --chip esp32s3 merge_bin \
+            -o merged-firmware.bin \
+            --flash_mode dio --flash_size 8MB \
+            0x0000 ${BUILD}/claude-keyboard.ino.bootloader.bin \
+            0x8000 ${BUILD}/claude-keyboard.ino.partitions.bin \
+            0xe000 ${BOOT_APP0} \
+            0x10000 ${BUILD}/claude-keyboard.ino.bin
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ github.sha }}
-          path: claude-keyboard/build/
+          path: |
+            claude-keyboard/build/m5stack.esp32.m5stack_sticks3/claude-keyboard.ino.bin
+            merged-firmware.bin
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: claude-keyboard/build/**/*.bin
+          files: |
+            claude-keyboard/build/m5stack.esp32.m5stack_sticks3/claude-keyboard.ino.bin
+            merged-firmware.bin

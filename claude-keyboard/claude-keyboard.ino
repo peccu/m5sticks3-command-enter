@@ -2,7 +2,8 @@
 // NimBLE-Arduino — install via Arduino Library Manager
 #include <NimBLEDevice.h>
 
-// Button A (face)   = Command+Enter (level) / Cmd+Shift+[ (tilt left) / Cmd+Shift+] (tilt right)
+// Button A (face)   = short press: send key for current mode+tilt
+//                    long press (1 s): cycle key mode
 // Button B (side)   = short press: cycle device  /  hold 2 s: enter pairing mode
 
 static const uint8_t hidReportMap[] = {
@@ -22,9 +23,66 @@ static const uint8_t hidReportMap[] = {
 #define MOD_LEFT_GUI          0x08
 #define MOD_LEFT_SHIFT        0x02
 #define KEY_ENTER             0x28
-#define KEY_LBRACKET          0x2F  // [ {
-#define KEY_RBRACKET          0x30  // ] }
+#define KEY_LBRACKET          0x2F  // [
+#define KEY_RBRACKET          0x30  // ]
+#define KEY_SPACE             0x2C
+#define KEY_RIGHT             0x4F
+#define KEY_LEFT              0x50
+#define KEY_DOWN              0x51
+#define KEY_UP                0x52
+#define KEY_F10               0x43  // Mute (macOS)
+#define KEY_F11               0x44  // Volume down
+#define KEY_F12               0x45  // Volume up / camera shutter
 #define NO_CONN               0xFFFF
+
+// Hold Button A for this long to cycle key modes.
+#define MODE_HOLD_MS  1000UL
+
+// ── Key modes ─────────────────────────────────────────────────────────────
+// Each mode maps the three possible inputs (center, tilt-left, tilt-right)
+// to a modifier+keycode pair plus a short display label.
+
+struct KeyMode {
+    const char* name;
+    uint8_t     centerMod, centerKey;
+    uint8_t     leftMod,   leftKey;
+    uint8_t     rightMod,  rightKey;
+    const char* centerLabel;
+    const char* leftLabel;
+    const char* rightLabel;
+};
+
+static const KeyMode keyModes[] = {
+    {
+        "Claude",
+        MOD_LEFT_GUI,                        KEY_ENTER,
+        MOD_LEFT_GUI | MOD_LEFT_SHIFT,       KEY_LBRACKET,
+        MOD_LEFT_GUI | MOD_LEFT_SHIFT,       KEY_RBRACKET,
+        "Cmd+Enter", "< Cmd+Shift+[", "Cmd+Shift+] >"
+    },
+    {
+        "Slide",
+        0, KEY_ENTER,
+        0, KEY_LEFT,
+        0, KEY_RIGHT,
+        "Enter", "< Prev", "Next >"
+    },
+    {
+        "Scroll",
+        0, KEY_SPACE,
+        0, KEY_UP,
+        0, KEY_DOWN,
+        "Space", "^ Up", "Down v"
+    },
+    {
+        "Volume",
+        0, KEY_F10,
+        0, KEY_F11,
+        0, KEY_F12,
+        "Mute", "< Vol-", "Vol+ >"
+    },
+};
+static const int NUM_MODES = (int)(sizeof(keyModes) / sizeof(keyModes[0]));
 
 // Roll threshold in G. Tune this to adjust tilt sensitivity.
 // 0.30 G ≈ 17°, 0.50 G ≈ 30°. Lower = more sensitive.
@@ -70,6 +128,13 @@ static TiltState currentTilt = TILT_CENTER;
 // Button B timing for long-press detection
 static uint32_t btnBDownMs                   = 0;
 static bool     btnBActionDone               = false;
+
+// Button A timing (short press = send key, long press = cycle mode)
+static uint32_t btnADownMs                   = 0;
+static bool     btnAActionDone               = false;
+
+// Current key mode index
+static int      currentMode                  = 0;
 
 // ── Forward declarations ───────────────────────────────────────────────────
 
@@ -307,36 +372,39 @@ void drawBattery() {
     M5.Display.setTextColor(WHITE, BLACK);
 }
 
-// Draw the dynamic A-button hint at the bottom, reflecting the current tilt state.
-// Called from drawButtonHints() and also directly from loop() when tilt changes.
+// Draw the dynamic A-button hint at the bottom: mode name (top) + tilt label (bottom).
+// Called from drawButtonHints() and also directly from loop() when tilt or mode changes.
 void drawTiltIndicator() {
     int w = M5.Display.width();
     int h = M5.Display.height();
     int usableW = w - 18;  // exclude right B-hint strip
 
-    const char* label;
-    uint32_t    color;
+    const KeyMode& m = keyModes[currentMode];
+    const char* tiltLabel;
+    uint32_t    tiltColor;
     switch (currentTilt) {
-        case TILT_LEFT:
-            label = "< Cmd+Shift+[";
-            color = YELLOW;
-            break;
-        case TILT_RIGHT:
-            label = "Cmd+Shift+] >";
-            color = YELLOW;
-            break;
-        default:
-            label = "Cmd+Enter";
-            color = TFT_DARKGREY;
-            break;
+        case TILT_LEFT:  tiltLabel = m.leftLabel;   tiltColor = YELLOW;       break;
+        case TILT_RIGHT: tiltLabel = m.rightLabel;  tiltColor = YELLOW;       break;
+        default:         tiltLabel = m.centerLabel; tiltColor = TFT_DARKGREY; break;
     }
 
-    int textW = strlen(label) * 6;
-    M5.Display.fillRect(0, h - 12, usableW, 12, BLACK);
+    M5.Display.fillRect(0, h - 20, usableW, 20, BLACK);
     M5.Display.setTextSize(1);
-    M5.Display.setTextColor(color, BLACK);
-    M5.Display.setCursor((usableW - textW) / 2, h - 9);
-    M5.Display.print(label);
+
+    // Mode name row
+    char modeBuf[12];
+    snprintf(modeBuf, sizeof(modeBuf), "[%s]", m.name);
+    int modeW = strlen(modeBuf) * 6;
+    M5.Display.setTextColor(CYAN, BLACK);
+    M5.Display.setCursor((usableW - modeW) / 2, h - 19);
+    M5.Display.print(modeBuf);
+
+    // Tilt action row
+    int tiltW = strlen(tiltLabel) * 6;
+    M5.Display.setTextColor(tiltColor, BLACK);
+    M5.Display.setCursor((usableW - tiltW) / 2, h - 9);
+    M5.Display.print(tiltLabel);
+
     M5.Display.setTextColor(WHITE, BLACK);
 }
 
@@ -378,14 +446,15 @@ void drawButtonHints() {
     drawBHintVertical();
 }
 
-// Layout (portrait 135×240 or landscape 240×135):
+// Layout (landscape 240×135):
 //   y=  5  "Claude"    (size 2, static)
 //   y= 21  "Keyboard"  (size 2, static)
-//   y= 55  "v0.5.0"    (size 1, static)
+//   y= 55  "v0.6.0"    (size 1, static)
 //   y= 68  status      (dynamic)
-//   y= 80  action      (dynamic)
-//   y=h-9  A hint      (hints layer)
-//   right  B hint      (hints layer, vertical)
+//   y= 92  action      (dynamic)
+//   y=h-19 mode name   (A hint line 1, cyan)
+//   y=h-9  tilt label  (A hint line 2, yellow/grey)
+//   right  B hint      (vertical strip, 18 px)
 #define DYNAMIC_AREA_TOP  65
 #define STATUS_Y          68
 #define ACTION_Y          92
@@ -451,7 +520,7 @@ void setup() {
     M5.Display.println("Keyboard");
     M5.Display.setTextSize(1);
     M5.Display.setCursor(10, 55);
-    M5.Display.println("v0.5.0");
+    M5.Display.println("v0.6.0");
 
     setupBLE();
     updateStatusDisplay();
@@ -517,30 +586,53 @@ void loop() {
         displayDirty = true;
     }
 
-    // ── Button A: send key according to current tilt ──────────────────────
+    // ── Button A: short press = send key, long press (1 s) = cycle mode ─────
     if (M5.BtnA.wasPressed()) {
-        if (bleConnected) {
-            switch (currentTilt) {
-                case TILT_LEFT:
-                    sendKey(MOD_LEFT_GUI | MOD_LEFT_SHIFT, KEY_LBRACKET);
-                    drawAction("Cmd+Shift+[ sent");
-                    break;
-                case TILT_RIGHT:
-                    sendKey(MOD_LEFT_GUI | MOD_LEFT_SHIFT, KEY_RBRACKET);
-                    drawAction("Cmd+Shift+] sent");
-                    break;
-                default:
-                    sendKey(MOD_LEFT_GUI, KEY_ENTER);
-                    drawAction("Cmd+Enter sent");
-                    break;
-            }
-            delay(500);
-            drawAction("");
-        } else if (!pairingMode) {
-            drawAction("Not connected");
-            delay(500);
+        btnADownMs    = millis();
+        btnAActionDone = false;
+    }
+
+    if (M5.BtnA.isPressed() && !btnAActionDone && btnADownMs > 0) {
+        if (millis() - btnADownMs >= MODE_HOLD_MS) {
+            btnAActionDone = true;
+            currentMode = (currentMode + 1) % NUM_MODES;
+            drawTiltIndicator();
+            char buf[24];
+            snprintf(buf, sizeof(buf), "Mode: %s", keyModes[currentMode].name);
+            drawAction(buf);
+            delay(800);
             drawAction("");
         }
+    }
+
+    if (M5.BtnA.wasReleased()) {
+        if (!btnAActionDone && btnADownMs > 0) {
+            const KeyMode& m = keyModes[currentMode];
+            if (bleConnected) {
+                switch (currentTilt) {
+                    case TILT_LEFT:
+                        sendKey(m.leftMod, m.leftKey);
+                        drawAction(m.leftLabel);
+                        break;
+                    case TILT_RIGHT:
+                        sendKey(m.rightMod, m.rightKey);
+                        drawAction(m.rightLabel);
+                        break;
+                    default:
+                        sendKey(m.centerMod, m.centerKey);
+                        drawAction(m.centerLabel);
+                        break;
+                }
+                delay(500);
+                drawAction("");
+            } else if (!pairingMode) {
+                drawAction("Not connected");
+                delay(500);
+                drawAction("");
+            }
+        }
+        btnADownMs    = 0;
+        btnAActionDone = false;
     }
 
     // ── Button B: short press = switch device, hold = pairing mode ────────

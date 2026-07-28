@@ -82,6 +82,7 @@ void setupBLE() {
 
     // Advertise as a BLE HID keyboard
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+    adv->setName("Claude Keyboard");
     adv->addServiceUUID("1812");
     adv->setAppearance(0x03C1); // Keyboard
     adv->start();

@@ -296,39 +296,49 @@ void drawBattery() {
     M5.Display.setTextColor(WHITE, BLACK);
 }
 
-// Draw Button B hint as vertical text on the right edge (position = button position).
+// Draw Button B hint as two-line vertical text on the right edge.
+// The two lines are packed into a single sprite (sprH=18) so one pushRotateZoom
+// handles both. With 270° rotation each line reads top→bottom on screen.
 static void drawBHintVertical() {
     int w = M5.Display.width();
     int h = M5.Display.height();
 
-    const char* text = "Next  Hold:Add";
-    int textW = strlen(text) * 6;
+    const char* line1 = "Click:Next Device";   // 17 chars × 6px = 102px
+    const char* line2 = "Hold:Add Device";     // 15 chars × 6px =  90px
+    int sprW = strlen(line1) * 6;              // wider of the two
+    int sprH = 18;                             // 8 (line1) + 2 (gap) + 8 (line2)
 
     M5Canvas spr(&M5.Display);
-    if (!spr.createSprite(textW, 8)) return;
+    if (!spr.createSprite(sprW, sprH)) return;
 
     spr.fillScreen(TFT_BLACK);
     spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
     spr.setTextSize(1);
     spr.setCursor(0, 0);
-    spr.print(text);
+    spr.print(line1);
+    spr.setCursor(0, 10);
+    spr.print(line2);
 
-    // 270°: "Next" at top, "Add" at bottom — reads top→bottom along right edge
-    spr.pushRotateZoom(w - 5, h / 2, 270, 1.0, 1.0);
+    // Center at (w-9, h/2): after 270° rotation the 18px-tall sprite becomes
+    // an 18px-wide strip flush with the right edge, both lines reading top→bottom.
+    spr.pushRotateZoom(w - 9, h / 2, 270, 1.0, 1.0);
     spr.deleteSprite();
 }
 
 void drawButtonHints() {
+    int w = M5.Display.width();
     int h = M5.Display.height();
 
-    // A hint: bottom of screen (Button A is on the front face)
+    // A hint: centered horizontally at bottom (Button A is on the front face)
+    const char* aText = "Cmd+Enter";
+    int textW = strlen(aText) * 6;
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(TFT_DARKGREY, BLACK);
-    M5.Display.setCursor(4, h - 9);
-    M5.Display.print("Cmd+Enter");
+    M5.Display.setCursor((w - textW) / 2, h - 9);
+    M5.Display.print(aText);
     M5.Display.setTextColor(WHITE, BLACK);
 
-    // B hint: vertical on right edge
+    // B hint: vertical on right edge (two lines, 18px wide strip)
     drawBHintVertical();
 }
 
@@ -382,8 +392,8 @@ void updateStatusDisplay() {
 
 void drawAction(const char* label) {
     int w = M5.Display.width();
-    // Preserve the right 10 px strip where the B-hint vertical text lives
-    M5.Display.fillRect(0, ACTION_Y, w - 10, 10, BLACK);
+    // Preserve the right 18px strip (two-line B-hint vertical text)
+    M5.Display.fillRect(0, ACTION_Y, w - 18, 10, BLACK);
     M5.Display.setTextSize(1);
     M5.Display.setCursor(10, ACTION_Y);
     M5.Display.setTextColor(WHITE, BLACK);

@@ -219,8 +219,8 @@ void setup() {
     M5.Display.setCursor(10, 55);
     M5.Display.println("v0.4.0  BtnB=switch");
 
-    updateStatusDisplay();
     setupBLE();
+    updateStatusDisplay();
 }
 
 void loop() {

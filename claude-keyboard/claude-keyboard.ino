@@ -76,15 +76,22 @@ class BLECallbacks : public NimBLEServerCallbacks {
             }
         }
 
-        // In normal (non-pairing) mode with multiple bonds, reject the wrong device.
-        // directed advertising in NimBLE-Arduino does not always enforce the filter
-        // at the BLE layer, so we guard here instead.
+        // Normal mode: reject any device that is not the current target
         if (!pairingMode && n > 1 && connIdx >= 0 && connIdx != targetBondIdx) {
-            Serial.printf("[BLE] reject Dev%d (want Dev%d) — disconnecting\n",
-                          connIdx + 1, targetBondIdx + 1);
+            Serial.printf("[BLE] reject Dev%d (want Dev%d)\n", connIdx + 1, targetBondIdx + 1);
             lastWasRejection = true;
             pServer->disconnect(info.getConnHandle());
-            return;  // onDisconnect will restart advertising after backoff
+            return;
+        }
+
+        // Pairing mode: only accept genuinely new (unknown) devices.
+        // Without this, the nearest already-bonded Mac reconnects immediately,
+        // blocking the new device from ever pairing.
+        if (pairingMode && connIdx >= 0) {
+            Serial.printf("[PAIR] reject known Dev%d — waiting for new device\n", connIdx + 1);
+            lastWasRejection = true;
+            pServer->disconnect(info.getConnHandle());
+            return;
         }
 
         pairingMode    = false;
@@ -262,14 +269,34 @@ void sendKey(uint8_t modifier, uint8_t keycode) {
 
 // ── Display helpers (main task only) ─────────────────────────────────────
 
-// Draw Button B label as vertical text on the right edge using a rotated sprite.
-// Button B is physically on the right side of the device, so this aligns visually.
+// Battery indicator — top-right corner, refreshed periodically.
+void drawBattery() {
+    int w = M5.Display.width();
+    int batt = M5.Power.getBatteryLevel();
+    bool chg  = M5.Power.isCharging();
+
+    char buf[8];
+    if (batt < 0) {
+        return;  // no battery info available
+    }
+    snprintf(buf, sizeof(buf), chg ? "+%d%%" : "%d%%", batt);
+
+    int bw = strlen(buf) * 6 + 2;
+    M5.Display.fillRect(w - bw, 0, bw, 12, BLACK);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(batt > 50 ? GREEN : batt > 20 ? YELLOW : RED, BLACK);
+    M5.Display.setCursor(w - bw + 1, 3);
+    M5.Display.print(buf);
+    M5.Display.setTextColor(WHITE, BLACK);
+}
+
+// Draw Button B hint as vertical text on the right edge (position = button position).
 static void drawBHintVertical() {
     int w = M5.Display.width();
     int h = M5.Display.height();
 
-    const char* text = "B: Next  Hold:Add";
-    int textW = strlen(text) * 6;  // size-1 font: 6 px per char
+    const char* text = "Next  Hold:Add";
+    int textW = strlen(text) * 6;
 
     M5Canvas spr(&M5.Display);
     if (!spr.createSprite(textW, 8)) return;
@@ -280,8 +307,7 @@ static void drawBHintVertical() {
     spr.setCursor(0, 0);
     spr.print(text);
 
-    // 270° rotation: "B:" ends up at the top, "Add" at the bottom —
-    // reads top→bottom along the right edge, matching the button position.
+    // 270°: "Next" at top, "Add" at bottom — reads top→bottom along right edge
     spr.pushRotateZoom(w - 5, h / 2, 270, 1.0, 1.0);
     spr.deleteSprite();
 }
@@ -293,7 +319,7 @@ void drawButtonHints() {
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(TFT_DARKGREY, BLACK);
     M5.Display.setCursor(4, h - 9);
-    M5.Display.print("A: Cmd+Enter");
+    M5.Display.print("Cmd+Enter");
     M5.Display.setTextColor(WHITE, BLACK);
 
     // B hint: vertical on right edge
@@ -326,7 +352,7 @@ void updateStatusDisplay() {
     char buf[40];
 
     if (pairingMode) {
-        snprintf(buf, sizeof(buf), "PAIRING... B:cancel");
+        snprintf(buf, sizeof(buf), "Pair new dev (B:cancel)");
         M5.Display.setTextColor(MAGENTA, BLACK);
     } else if (bleConnected) {
         snprintf(buf, sizeof(buf), "[Dev%d/%d] Connected!", targetBondIdx + 1, n);
@@ -344,6 +370,7 @@ void updateStatusDisplay() {
     M5.Display.println(buf);
     M5.Display.setTextColor(WHITE, BLACK);
 
+    drawBattery();
     drawButtonHints();
 }
 
@@ -376,6 +403,7 @@ void setup() {
 
     setupBLE();
     updateStatusDisplay();
+    drawBattery();
 }
 
 void loop() {
@@ -385,6 +413,13 @@ void loop() {
     if (displayDirty) {
         displayDirty = false;
         updateStatusDisplay();
+    }
+
+    // Refresh battery indicator every 30 s
+    static uint32_t lastBattMs = 0;
+    if (millis() - lastBattMs >= 30000) {
+        lastBattMs = millis();
+        drawBattery();
     }
 
     // Directed advertising timeout → fall back to undirected

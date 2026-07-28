@@ -370,7 +370,7 @@ void updateStatusDisplay() {
     char buf[40];
 
     if (pairingMode) {
-        snprintf(buf, sizeof(buf), "Pair new device\n(Side Button:Cancel)");
+        snprintf(buf, sizeof(buf), "Pair new device\n(Click:Cancel)");
         M5.Display.setTextColor(MAGENTA, BLACK);
     } else if (bleConnected) {
         snprintf(buf, sizeof(buf), "[Dev%d/%d] Connected!", targetBondIdx + 1, n);
@@ -481,22 +481,21 @@ void loop() {
         btnBActionDone = false;
     }
 
-    // While held: fire pairing action at 2 s
-    if (M5.BtnB.isPressed() && !btnBActionDone && btnBDownMs > 0) {
+    // While held (normal mode only): fire enterPairingMode at 2 s
+    if (M5.BtnB.isPressed() && !btnBActionDone && btnBDownMs > 0 && !pairingMode) {
         if (millis() - btnBDownMs >= PAIRING_HOLD_MS) {
             btnBActionDone = true;
-            if (pairingMode) {
-                cancelPairingMode();
-            } else {
-                enterPairingMode();
-            }
+            enterPairingMode();
         }
     }
 
-    // On release: if no action was taken yet → short press → switch device
+    // On release: short press action depends on current mode
     if (M5.BtnB.wasReleased()) {
         if (!btnBActionDone && btnBDownMs > 0) {
-            if (NimBLEDevice::getNumBonds() > 0) {
+            if (pairingMode) {
+                // Click cancels pairing mode
+                cancelPairingMode();
+            } else if (NimBLEDevice::getNumBonds() > 0) {
                 switchToNextDevice();
             }
         }

@@ -485,12 +485,12 @@ void loop() {
         drawBattery();
     }
 
-    // Tilt detection — update A-hint and button behaviour every 50 ms.
+    // Tilt detection — update A-hint and button behaviour every 200 ms.
     // Uses the X-axis acceleration (roll).  If left/right are swapped on your
     // device, negate the comparison (ax > threshold → TILT_LEFT, etc.).
     // Serial log: hold the device and watch "[TILT]" lines to find the right axis.
     static uint32_t lastImuMs = 0;
-    if (millis() - lastImuMs >= 50) {
+    if (millis() - lastImuMs >= 200) {
         lastImuMs = millis();
         if (M5.Imu.update()) {
             auto d = M5.Imu.getImuData();

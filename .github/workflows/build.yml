@@ -38,10 +38,9 @@ jobs:
       - name: Install libraries
         run: |
           arduino-cli lib install "M5Unified"
-          # ESP32 BLE Keyboard is not in the Library Manager; install from GitHub
-          arduino-cli config set library.enable_unsafe_install true
-          arduino-cli lib install \
-            --git-url https://github.com/T-vK/ESP32-BLE-Keyboard.git
+          # NimBLE-Arduino is available in the Library Manager
+          # and is compatible with M5Stack ESP32 core 3.x
+          arduino-cli lib install "NimBLE-Arduino"
 
       # FQBN confirmed: m5stack:esp32:m5stack_sticks3
       - name: Compile

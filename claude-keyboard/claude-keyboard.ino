@@ -5,18 +5,25 @@
 // Step 2: BLE HID keyboard — advertises, pairs, shows connection status
 // Key sending will be added in Step 3
 
-// Standard keyboard HID report descriptor (8-byte report, no Report ID)
+// Keyboard HID report descriptor
+//   Report ID 1, 8-byte input: [modifier][reserved][key x6]
+//   Report ID 1, 1-byte output: [LED bits x5 | padding x3]
 static const uint8_t hidReportMap[] = {
     0x05, 0x01,  // Usage Page (Generic Desktop)
     0x09, 0x06,  // Usage (Keyboard)
     0xA1, 0x01,  // Collection (Application)
-    // Modifier keys — 8 bits
+    0x85, 0x01,  // Report ID (1)
+    // Modifier keys — 8 bits (Left/Right Ctrl/Shift/Alt/GUI)
     0x05, 0x07,  0x19, 0xE0,  0x29, 0xE7,
     0x15, 0x00,  0x25, 0x01,  0x75, 0x01,
     0x95, 0x08,  0x81, 0x02,
     // Reserved byte
     0x95, 0x01,  0x75, 0x08,  0x81, 0x01,
-    // Key array — 6 slots
+    // LED output — 5 LED bits (Num/Caps/Scroll/Compose/Kana) + 3 padding
+    0x05, 0x08,  0x19, 0x01,  0x29, 0x05,
+    0x95, 0x05,  0x75, 0x01,  0x91, 0x02,
+    0x95, 0x01,  0x75, 0x03,  0x91, 0x01,
+    // Key array — 6 simultaneous keys
     0x95, 0x06,  0x75, 0x08,
     0x15, 0x00,  0x25, 0x65,
     0x05, 0x07,  0x19, 0x00,  0x29, 0x65,
@@ -30,7 +37,7 @@ static bool bleConnected = false;
 class BLECallbacks : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
         bleConnected = true;
-        // Initiate bonding from the peripheral side so macOS completes pairing
+        // Initiate bonding from peripheral side so macOS completes pairing
         pServer->startSecurity(connInfo.getConnHandle());
     }
     void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
@@ -41,17 +48,20 @@ class BLECallbacks : public NimBLEServerCallbacks {
 
 void setupBLE() {
     NimBLEDevice::init("Claude Keyboard");
-    // Just Works bonding — no passkey required
-    NimBLEDevice::setSecurityAuth(true, false, true);
+    NimBLEDevice::setSecurityAuth(true, false, true); // bonding, no MITM, SC
     NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
 
     NimBLEServer* server = NimBLEDevice::createServer();
     server->setCallbacks(new BLECallbacks());
 
-    // Device Information Service — required by macOS HID stack
+    // Device Information Service (0x180A)
     NimBLEService* dis = server->createService("180A");
-    // PnP ID: source=USB-IF, VID=0x05AC (Apple), PID=0x0000, ver=0x0001
-    uint8_t pnpId[] = {0x02, 0xAC, 0x05, 0x00, 0x00, 0x01, 0x00};
+    dis->createCharacteristic("2A29", NIMBLE_PROPERTY::READ)
+       ->setValue("M5Stack");
+    dis->createCharacteristic("2A24", NIMBLE_PROPERTY::READ)
+       ->setValue("M5StickS3");
+    // PnP ID: source=BT SIG (0x01), VID=0x02E5 (Espressif), PID=0x0000, ver=0x0001
+    uint8_t pnpId[] = {0x01, 0xE5, 0x02, 0x00, 0x00, 0x01, 0x00};
     dis->createCharacteristic("2A50", NIMBLE_PROPERTY::READ)
        ->setValue(pnpId, sizeof(pnpId));
     dis->start();
@@ -64,18 +74,28 @@ void setupBLE() {
     hid->createCharacteristic("2A4E", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE_NR)
        ->setValue(&mode, 1);
 
-    // Report Map
-    hid->createCharacteristic("2A4B", NIMBLE_PROPERTY::READ)
+    // Report Map — READ_ENC required by HOGP spec
+    hid->createCharacteristic("2A4B", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC)
        ->setValue(hidReportMap, sizeof(hidReportMap));
 
-    // Input Report — READ_ENC forces macOS to complete pairing before reading
+    // Input Report (Report ID 1, Input type)
     inputReport = hid->createCharacteristic(
         "2A4D",
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC
     );
-    uint8_t refVal[] = {0x00, 0x01}; // Report ID 0, Input type
-    inputReport->createDescriptor("2908", NIMBLE_PROPERTY::READ, 2)
-               ->setValue(refVal, 2);
+    uint8_t inRefVal[] = {0x01, 0x01}; // Report ID 1, Input
+    inputReport->createDescriptor("2908", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC, 2)
+               ->setValue(inRefVal, 2);
+
+    // Output Report (Report ID 1, Output type) — host writes LED state here
+    NimBLECharacteristic* outputRpt = hid->createCharacteristic(
+        "2A4D",
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+        NIMBLE_PROPERTY::READ_ENC | NIMBLE_PROPERTY::WRITE_ENC
+    );
+    uint8_t outRefVal[] = {0x01, 0x02}; // Report ID 1, Output
+    outputRpt->createDescriptor("2908", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC, 2)
+             ->setValue(outRefVal, 2);
 
     // HID Information: HID 1.11, not localized, remote wake + normally connectable
     uint8_t info[] = {0x11, 0x01, 0x00, 0x03};
@@ -87,10 +107,12 @@ void setupBLE() {
 
     hid->start();
 
-    // Battery Service — required by many BLE HID hosts
+    // Battery Service (0x180F)
     NimBLEService* batt = server->createService("180F");
     uint8_t lvl = 100;
-    batt->createCharacteristic("2A19", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY)
+    batt->createCharacteristic(
+        "2A19",
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC)
         ->setValue(&lvl, 1);
     batt->start();
 

@@ -262,29 +262,65 @@ void sendKey(uint8_t modifier, uint8_t keycode) {
 
 // ── Display helpers (main task only) ─────────────────────────────────────
 
+// Draw Button B label as vertical text on the right edge using a rotated sprite.
+// Button B is physically on the right side of the device, so this aligns visually.
+static void drawBHintVertical() {
+    int w = M5.Display.width();
+    int h = M5.Display.height();
+
+    const char* text = "B: Next  Hold:Add";
+    int textW = strlen(text) * 6;  // size-1 font: 6 px per char
+
+    M5Canvas spr(&M5.Display);
+    if (!spr.createSprite(textW, 8)) return;
+
+    spr.fillScreen(TFT_BLACK);
+    spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    spr.setTextSize(1);
+    spr.setCursor(0, 0);
+    spr.print(text);
+
+    // 270° rotation: "B:" ends up at the top, "Add" at the bottom —
+    // reads top→bottom along the right edge, matching the button position.
+    spr.pushRotateZoom(w - 5, h / 2, 270, 1.0, 1.0);
+    spr.deleteSprite();
+}
+
 void drawButtonHints() {
     int h = M5.Display.height();
-    int w = M5.Display.width();
-    // Two-line legend at the bottom
-    M5.Display.fillRect(0, h - 18, w, 18, BLACK);
+
+    // A hint: bottom of screen (Button A is on the front face)
     M5.Display.setTextSize(1);
     M5.Display.setTextColor(TFT_DARKGREY, BLACK);
-    M5.Display.setCursor(2, h - 17);
+    M5.Display.setCursor(4, h - 9);
     M5.Display.print("A: Cmd+Enter");
-    M5.Display.setCursor(2, h - 8);
-    M5.Display.print("B: Next  Hold: Add Dev");
     M5.Display.setTextColor(WHITE, BLACK);
+
+    // B hint: vertical on right edge
+    drawBHintVertical();
 }
+
+// Layout (portrait 135×240 or landscape 240×135):
+//   y=  5  "Claude"    (size 2, static)
+//   y= 21  "Keyboard"  (size 2, static)
+//   y= 55  "v0.5.0"    (size 1, static)
+//   y= 68  status      (dynamic)
+//   y= 80  action      (dynamic)
+//   y=h-9  A hint      (hints layer)
+//   right  B hint      (hints layer, vertical)
+#define DYNAMIC_AREA_TOP  65
+#define STATUS_Y          68
+#define ACTION_Y          80
 
 void updateStatusDisplay() {
     int w = M5.Display.width();
     int h = M5.Display.height();
 
-    // Clear dynamic area (below title, above hints)
-    M5.Display.fillRect(0, 48, w, h - 48 - 19, BLACK);
+    // Clear everything from below the static title to the bottom
+    M5.Display.fillRect(0, DYNAMIC_AREA_TOP, w, h - DYNAMIC_AREA_TOP, BLACK);
 
     M5.Display.setTextSize(1);
-    M5.Display.setCursor(10, 50);
+    M5.Display.setCursor(10, STATUS_Y);
 
     int n   = NimBLEDevice::getNumBonds();
     char buf[40];
@@ -313,9 +349,10 @@ void updateStatusDisplay() {
 
 void drawAction(const char* label) {
     int w = M5.Display.width();
-    M5.Display.fillRect(0, 65, w, 10, BLACK);
+    // Preserve the right 10 px strip where the B-hint vertical text lives
+    M5.Display.fillRect(0, ACTION_Y, w - 10, 10, BLACK);
     M5.Display.setTextSize(1);
-    M5.Display.setCursor(10, 65);
+    M5.Display.setCursor(10, ACTION_Y);
     M5.Display.setTextColor(WHITE, BLACK);
     M5.Display.println(label);
 }
@@ -331,9 +368,10 @@ void setup() {
     M5.Display.setTextColor(WHITE, BLACK);
     M5.Display.setTextSize(2);
     M5.Display.setCursor(10, 5);
-    M5.Display.println("BT Keyboard");
+    M5.Display.println("Claude");
+    M5.Display.println("Keyboard");
     M5.Display.setTextSize(1);
-    M5.Display.setCursor(10, 35);
+    M5.Display.setCursor(10, 55);
     M5.Display.println("v0.5.0");
 
     setupBLE();

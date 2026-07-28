@@ -2,7 +2,7 @@
 // NimBLE-Arduino — install via Arduino Library Manager
 #include <NimBLEDevice.h>
 
-// Step 2: BLE HID keyboard — advertises and accepts pairing, shows status
+// Step 2: BLE HID keyboard — advertises, pairs, shows connection status
 // Key sending will be added in Step 3
 
 // Standard keyboard HID report descriptor (8-byte report, no Report ID)
@@ -10,7 +10,7 @@ static const uint8_t hidReportMap[] = {
     0x05, 0x01,  // Usage Page (Generic Desktop)
     0x09, 0x06,  // Usage (Keyboard)
     0xA1, 0x01,  // Collection (Application)
-    // Modifier keys — 8 bits (Ctrl/Shift/Alt/GUI left+right)
+    // Modifier keys — 8 bits
     0x05, 0x07,  0x19, 0xE0,  0x29, 0xE7,
     0x15, 0x00,  0x25, 0x01,  0x75, 0x01,
     0x95, 0x08,  0x81, 0x02,
@@ -39,10 +39,20 @@ class BLECallbacks : public NimBLEServerCallbacks {
 
 void setupBLE() {
     NimBLEDevice::init("Claude Keyboard");
-    NimBLEDevice::setSecurityAuth(true, false, true); // bonding, no MITM, SC
+    // Just Works bonding — no passkey required
+    NimBLEDevice::setSecurityAuth(true, false, true);
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
 
     NimBLEServer* server = NimBLEDevice::createServer();
     server->setCallbacks(new BLECallbacks());
+
+    // Device Information Service — required by macOS HID stack
+    NimBLEService* dis = server->createService("180A");
+    // PnP ID: source=USB-IF, VID=0x05AC (Apple), PID=0x0000, ver=0x0001
+    uint8_t pnpId[] = {0x02, 0xAC, 0x05, 0x00, 0x00, 0x01, 0x00};
+    dis->createCharacteristic("2A50", NIMBLE_PROPERTY::READ)
+       ->setValue(pnpId, sizeof(pnpId));
+    dis->start();
 
     // HID Service (0x1812)
     NimBLEService* hid = server->createService("1812");
@@ -56,9 +66,11 @@ void setupBLE() {
     hid->createCharacteristic("2A4B", NIMBLE_PROPERTY::READ)
        ->setValue(hidReportMap, sizeof(hidReportMap));
 
-    // Input Report
+    // Input Report — READ_ENC forces macOS to complete pairing before reading
     inputReport = hid->createCharacteristic(
-        "2A4D", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+        "2A4D",
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC
+    );
     uint8_t refVal[] = {0x00, 0x01}; // Report ID 0, Input type
     inputReport->createDescriptor("2908", NIMBLE_PROPERTY::READ, 2)
                ->setValue(refVal, 2);

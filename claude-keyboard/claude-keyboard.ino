@@ -2,8 +2,8 @@
 // NimBLE-Arduino — install via Arduino Library Manager
 #include <NimBLEDevice.h>
 
-// Button A = Command+Enter
-// Button B = switch to next bonded device via directed advertising
+// Button A (face)   = Command+Enter
+// Button B (side)   = short press: cycle device  /  hold 2 s: enter pairing mode
 
 static const uint8_t hidReportMap[] = {
     0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x85, 0x01,
@@ -22,49 +22,96 @@ static const uint8_t hidReportMap[] = {
 #define MOD_LEFT_GUI          0x08
 #define KEY_ENTER             0x28
 #define NO_CONN               0xFFFF
-#define DIRECTED_ADV_TIMEOUT_MS 30000  // 30 s — long enough for user to wake Mac
 
-static NimBLECharacteristic* inputReport   = nullptr;
-static bool     bleConnected               = false;
-static uint16_t activeConnHandle           = NO_CONN;
-static int      targetBondIdx              = 0;
-static uint32_t directedAdvStartMs         = 0;
+// Directed advertising lasts this long before falling back to undirected.
+// Long enough to let the user wake the target Mac.
+#define DIRECTED_ADV_TIMEOUT_MS  30000UL
 
-// Flag to request a display refresh from the main loop.
-// BLE callbacks run in a separate task; touching M5.Display there causes
-// display corruption. Set this flag instead and let loop() do the update.
-static volatile bool displayDirty = false;
+// Hold Button B for this long to enter pairing mode.
+#define PAIRING_HOLD_MS  2000UL
+
+// After rejecting a wrong-device connection, wait briefly before re-advertising
+// to let the rejected device stop trying immediately.
+#define REJECTION_BACKOFF_MS  800UL
+
+// ── Shared state ──────────────────────────────────────────────────────────
+
+static NimBLECharacteristic* inputReport     = nullptr;
+static bool     bleConnected                 = false;
+static uint16_t activeConnHandle             = NO_CONN;
+static int      targetBondIdx                = 0;
+static uint32_t directedAdvStartMs           = 0;
+static bool     pairingMode                  = false;
+
+// Set from BLE callbacks; consumed in loop() for display updates.
+// All M5.Display calls happen in the main task only.
+static volatile bool displayDirty           = false;
+
+// Signals onDisconnect that the disconnect was a deliberate rejection
+// (not a real disconnect), so advertising should restart after a backoff.
+static volatile bool lastWasRejection       = false;
+
+// Button B timing for long-press detection
+static uint32_t btnBDownMs                   = 0;
+static bool     btnBActionDone               = false;
+
+// ── Forward declarations ───────────────────────────────────────────────────
 
 void startAdvertising();
+void updateStatusDisplay();
+void drawButtonHints();
 
 // ── BLE callbacks ──────────────────────────────────────────────────────────
 
 class BLECallbacks : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
-        bleConnected     = true;
-        activeConnHandle = info.getConnHandle();
-        directedAdvStartMs = 0;
-
-        // Sync targetBondIdx to whichever device actually connected
+    void onConnect(NimBLEServer* pServer, NimBLEConnInfo& info) override {
         NimBLEAddress addr = info.getAddress();
         int n = NimBLEDevice::getNumBonds();
+        int connIdx = -1;
+
         for (int i = 0; i < n; i++) {
             if (NimBLEDevice::getBondedAddress(i) == addr) {
-                targetBondIdx = i;
+                connIdx = i;
                 break;
             }
         }
-        Serial.printf("[BLE] connected  handle=%d  targetIdx=%d\n",
+
+        // In normal (non-pairing) mode with multiple bonds, reject the wrong device.
+        // directed advertising in NimBLE-Arduino does not always enforce the filter
+        // at the BLE layer, so we guard here instead.
+        if (!pairingMode && n > 1 && connIdx >= 0 && connIdx != targetBondIdx) {
+            Serial.printf("[BLE] reject Dev%d (want Dev%d) — disconnecting\n",
+                          connIdx + 1, targetBondIdx + 1);
+            lastWasRejection = true;
+            pServer->disconnect(info.getConnHandle());
+            return;  // onDisconnect will restart advertising after backoff
+        }
+
+        pairingMode    = false;
+        bleConnected   = true;
+        activeConnHandle = info.getConnHandle();
+        directedAdvStartMs = 0;
+        if (connIdx >= 0) targetBondIdx = connIdx;
+
+        Serial.printf("[BLE] connected handle=%d idx=%d\n",
                       activeConnHandle, targetBondIdx);
         NimBLEDevice::startSecurity(activeConnHandle);
         displayDirty = true;
     }
 
     void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
+        bool rejected = lastWasRejection;
+        lastWasRejection = false;
         bleConnected     = false;
         activeConnHandle = NO_CONN;
-        Serial.printf("[BLE] disconnected  reason=0x%02x  next=Dev%d\n",
-                      reason, targetBondIdx + 1);
+
+        Serial.printf("[BLE] disconnected reason=0x%02x  next=Dev%d%s\n",
+                      reason, targetBondIdx + 1, rejected ? " (rejected)" : "");
+
+        if (rejected) {
+            // Give the rejected device a moment to stop hammering us
+            vTaskDelay(pdMS_TO_TICKS(REJECTION_BACKOFF_MS));
+        }
         startAdvertising();
         displayDirty = true;
     }
@@ -77,10 +124,13 @@ void startAdvertising() {
     adv->stop();
 
     int n = NimBLEDevice::getNumBonds();
-    if (n == 0) {
+
+    if (n == 0 || pairingMode) {
         adv->start();
         directedAdvStartMs = 0;
-        Serial.println("[ADV] undirected (no bonds)");
+        Serial.println(pairingMode
+                       ? "[ADV] pairing mode — undirected"
+                       : "[ADV] no bonds — undirected");
     } else {
         if (targetBondIdx >= n) targetBondIdx = 0;
         NimBLEAddress target = NimBLEDevice::getBondedAddress(targetBondIdx);
@@ -90,28 +140,48 @@ void startAdvertising() {
         if (ok) {
             directedAdvStartMs = millis();
         } else {
-            // Directed advertising not supported or failed — fall back
-            Serial.println("[ADV] directed failed, falling back to undirected");
+            Serial.println("[ADV] directed start failed — undirected fallback");
             adv->start();
             directedAdvStartMs = 0;
         }
     }
 }
 
+// ── Device switching / pairing ────────────────────────────────────────────
+
 void switchToNextDevice() {
     int n = NimBLEDevice::getNumBonds();
     if (n == 0) return;
 
     targetBondIdx = (targetBondIdx + 1) % n;
-    Serial.printf("[SW] switching -> Dev%d/%d\n", targetBondIdx + 1, n);
+    Serial.printf("[SW] -> Dev%d/%d\n", targetBondIdx + 1, n);
 
     if (bleConnected && activeConnHandle != NO_CONN) {
         NimBLEDevice::getServer()->disconnect(activeConnHandle);
-        // startAdvertising() will be called from onDisconnect
+        // onDisconnect → startAdvertising() toward new target
     } else {
         startAdvertising();
         displayDirty = true;
     }
+}
+
+void enterPairingMode() {
+    Serial.println("[PAIR] entering pairing mode — hold B again to cancel");
+    pairingMode = true;
+    if (bleConnected && activeConnHandle != NO_CONN) {
+        NimBLEDevice::getServer()->disconnect(activeConnHandle);
+        // onDisconnect → startAdvertising() in pairing mode
+    } else {
+        startAdvertising();
+        displayDirty = true;
+    }
+}
+
+void cancelPairingMode() {
+    Serial.println("[PAIR] cancelled");
+    pairingMode = false;
+    startAdvertising();
+    displayDirty = true;
 }
 
 // ── BLE setup ─────────────────────────────────────────────────────────────
@@ -149,7 +219,7 @@ void setupBLE() {
 
     NimBLECharacteristic* outputRpt = hid->createCharacteristic(
         "2A4D",
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+        NIMBLE_PROPERTY::READ  | NIMBLE_PROPERTY::WRITE    | NIMBLE_PROPERTY::WRITE_NR |
         NIMBLE_PROPERTY::READ_ENC | NIMBLE_PROPERTY::WRITE_ENC);
     uint8_t outRef[] = {0x01, 0x02};
     outputRpt->createDescriptor("2908", NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC, 2)
@@ -190,17 +260,39 @@ void sendKey(uint8_t modifier, uint8_t keycode) {
     inputReport->notify();
 }
 
-// ── Display (called only from main loop) ──────────────────────────────────
+// ── Display helpers (main task only) ─────────────────────────────────────
+
+void drawButtonHints() {
+    int h = M5.Display.height();
+    int w = M5.Display.width();
+    // Two-line legend at the bottom
+    M5.Display.fillRect(0, h - 18, w, 18, BLACK);
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(TFT_DARKGREY, BLACK);
+    M5.Display.setCursor(2, h - 17);
+    M5.Display.print("A: Cmd+Enter");
+    M5.Display.setCursor(2, h - 8);
+    M5.Display.print("B: Next  Hold: Add Dev");
+    M5.Display.setTextColor(WHITE, BLACK);
+}
 
 void updateStatusDisplay() {
-    M5.Display.fillRect(0, 70, M5.Display.width(), 20, BLACK);
+    int w = M5.Display.width();
+    int h = M5.Display.height();
+
+    // Clear dynamic area (below title, above hints)
+    M5.Display.fillRect(0, 48, w, h - 48 - 19, BLACK);
+
     M5.Display.setTextSize(1);
-    M5.Display.setCursor(10, 70);
+    M5.Display.setCursor(10, 50);
 
-    int n = NimBLEDevice::getNumBonds();
-    char buf[32];
+    int n   = NimBLEDevice::getNumBonds();
+    char buf[40];
 
-    if (bleConnected) {
+    if (pairingMode) {
+        snprintf(buf, sizeof(buf), "PAIRING... B:cancel");
+        M5.Display.setTextColor(MAGENTA, BLACK);
+    } else if (bleConnected) {
         snprintf(buf, sizeof(buf), "[Dev%d/%d] Connected!", targetBondIdx + 1, n);
         M5.Display.setTextColor(GREEN, BLACK);
     } else if (directedAdvStartMs > 0) {
@@ -215,12 +307,15 @@ void updateStatusDisplay() {
     }
     M5.Display.println(buf);
     M5.Display.setTextColor(WHITE, BLACK);
+
+    drawButtonHints();
 }
 
 void drawAction(const char* label) {
-    M5.Display.fillRect(0, 95, M5.Display.width(), 15, BLACK);
+    int w = M5.Display.width();
+    M5.Display.fillRect(0, 65, w, 10, BLACK);
     M5.Display.setTextSize(1);
-    M5.Display.setCursor(10, 95);
+    M5.Display.setCursor(10, 65);
     M5.Display.setTextColor(WHITE, BLACK);
     M5.Display.println(label);
 }
@@ -235,12 +330,11 @@ void setup() {
 
     M5.Display.setTextColor(WHITE, BLACK);
     M5.Display.setTextSize(2);
-    M5.Display.setCursor(10, 20);
+    M5.Display.setCursor(10, 5);
     M5.Display.println("BT Keyboard");
-
     M5.Display.setTextSize(1);
-    M5.Display.setCursor(10, 55);
-    M5.Display.println("v0.4.0  BtnB=switch");
+    M5.Display.setCursor(10, 35);
+    M5.Display.println("v0.5.0");
 
     setupBLE();
     updateStatusDisplay();
@@ -249,7 +343,7 @@ void setup() {
 void loop() {
     M5.update();
 
-    // Update display from main task only (BLE callbacks set displayDirty)
+    // Display updates must happen in the main task
     if (displayDirty) {
         displayDirty = false;
         updateStatusDisplay();
@@ -258,14 +352,14 @@ void loop() {
     // Directed advertising timeout → fall back to undirected
     if (!bleConnected && directedAdvStartMs > 0 &&
         (millis() - directedAdvStartMs) > DIRECTED_ADV_TIMEOUT_MS) {
-        Serial.println("[ADV] directed timeout, falling back to undirected");
+        Serial.println("[ADV] directed timeout — undirected fallback");
         directedAdvStartMs = 0;
         NimBLEDevice::getAdvertising()->stop();
         NimBLEDevice::getAdvertising()->start();
         displayDirty = true;
     }
 
-    // Button A: send Command+Enter
+    // ── Button A: send Command+Enter ──────────────────────────────────────
     if (M5.BtnA.wasPressed()) {
         if (bleConnected) {
             sendKey(MOD_LEFT_GUI, KEY_ENTER);
@@ -279,11 +373,33 @@ void loop() {
         }
     }
 
-    // Button B: cycle to next bonded device
+    // ── Button B: short press = switch device, hold = pairing mode ────────
     if (M5.BtnB.wasPressed()) {
-        if (NimBLEDevice::getNumBonds() > 0) {
-            switchToNextDevice();
+        btnBDownMs    = millis();
+        btnBActionDone = false;
+    }
+
+    // While held: fire pairing action at 2 s
+    if (M5.BtnB.isPressed() && !btnBActionDone && btnBDownMs > 0) {
+        if (millis() - btnBDownMs >= PAIRING_HOLD_MS) {
+            btnBActionDone = true;
+            if (pairingMode) {
+                cancelPairingMode();
+            } else {
+                enterPairingMode();
+            }
         }
+    }
+
+    // On release: if no action was taken yet → short press → switch device
+    if (M5.BtnB.wasReleased()) {
+        if (!btnBActionDone && btnBDownMs > 0) {
+            if (NimBLEDevice::getNumBonds() > 0) {
+                switchToNextDevice();
+            }
+        }
+        btnBDownMs    = 0;
+        btnBActionDone = false;
     }
 
     delay(10);

@@ -28,10 +28,10 @@ static NimBLECharacteristic* inputReport = nullptr;
 static bool bleConnected = false;
 
 class BLECallbacks : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer*) override {
+    void onConnect(NimBLEServer*, NimBLEConnInfo&) override {
         bleConnected = true;
     }
-    void onDisconnect(NimBLEServer*) override {
+    void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
         bleConnected = false;
         NimBLEDevice::startAdvertising();
     }

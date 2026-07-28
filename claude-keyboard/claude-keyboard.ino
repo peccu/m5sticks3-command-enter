@@ -56,30 +56,30 @@ static const KeyMode keyModes[] = {
     {
         "Claude",
         MOD_LEFT_GUI,                        KEY_ENTER,
-        MOD_LEFT_GUI | MOD_LEFT_SHIFT,       KEY_LBRACKET,
         MOD_LEFT_GUI | MOD_LEFT_SHIFT,       KEY_RBRACKET,
-        "Cmd+Enter", "< Cmd+Shift+[", "Cmd+Shift+] >"
+        MOD_LEFT_GUI | MOD_LEFT_SHIFT,       KEY_LBRACKET,
+        "Cmd+Enter", "< Cmd+Shift+]", "Cmd+Shift+[ >"
     },
     {
         "Slide",
         0, KEY_ENTER,
-        0, KEY_LEFT,
         0, KEY_RIGHT,
-        "Enter", "< Prev", "Next >"
+        0, KEY_LEFT,
+        "Enter", "< Next", "Prev >"
     },
     {
         "Scroll",
         0, KEY_SPACE,
-        0, KEY_UP,
         0, KEY_DOWN,
-        "Space", "^ Up", "Down v"
+        0, KEY_UP,
+        "Space", "v Down", "Up ^"
     },
     {
         "Volume",
         0, KEY_F10,
-        0, KEY_F11,
         0, KEY_F12,
-        "Mute", "< Vol-", "Vol+ >"
+        0, KEY_F11,
+        "Mute", "< Vol+", "Vol- >"
     },
 };
 static const int NUM_MODES = (int)(sizeof(keyModes) / sizeof(keyModes[0]));

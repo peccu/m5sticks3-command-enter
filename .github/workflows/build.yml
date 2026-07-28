@@ -40,16 +40,11 @@ jobs:
       - name: Install libraries
         run: arduino-cli lib install "M5Unified"
 
-      # FQBN の確認方法:
-      #   arduino-cli board listall m5stack
-      # StickS3 の候補:
-      #   m5stack:esp32:m5sticks3        (M5Stack パッケージ — 優先)
-      #   esp32:esp32:m5sticks3          (Espressif パッケージ)
-      # Arduino IDE の ツール > ボード で表示される名前を確認してください
+      # FQBN: m5stack:esp32:m5stack_sticks3 (確認済み)
       - name: Compile
         run: |
           arduino-cli compile \
-            --fqbn m5stack:esp32:m5sticks3 \
+            --fqbn m5stack:esp32:m5stack_sticks3 \
             --export-binaries \
             claude-keyboard
 
